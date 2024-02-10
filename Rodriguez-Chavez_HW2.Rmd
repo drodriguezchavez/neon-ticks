@@ -1,0 +1,201 @@
+---
+title: "ESPM 174A - Homework assignment 2"
+author: "Daniela Rodriguez-Chavez"
+date: "September 29, 2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+### Instructions
+Work on the exercise below, due September 29 (before midnight) on bCourses. Please write **short answers (<100 words)**  in "your text here", as well as the R code you used to get there (in "your code here").
+
+```{r setup, message=FALSE}
+# Load packages 
+library(tidyverse)
+library(neon4cast) # remotes::install_github("eco4cast/neon4cast")
+library(neonUtilities)
+library(BiocManager) 
+```
+
+### 1) Preliminary statistics [3 points]. 
+1) Please upload a sample of the data (.csv file) you plan to analyze for your final project. You can (but do not need to) upload the whole dataset. However, the closer the resemblance of this data set to the one you will end up analyzing, the better. E.g., if your question is at the community level, then include several species; if you would like to compare a particular physical variable across different sites, then include several sites. The goal is for you to start getting familiar with your data and its level of complexity. In the code below, import your data set in R, and examine the following properties: (1) length and frequency of the time series (whether it is one, or multiple time series); (2) completeness of each time series; (3) basic descriptive statistics for each time series (at least mean, CV, ACF for each variable; plus anything else you would like to add). [3 points total]
+
+```{r}
+# 1. the length and frequency of the time series 
+tick_data <- read_csv("https://data.ecoforecast.org/neon4cast-targets/ticks/ticks-targets.csv.gz")
+# we can use the max and min to find the span of the time series (including NAs)
+min_date <- min(tick_data$datetime)
+max_date <- max(tick_data$datetime)
+# to get the total length in days we have 
+paste('There is a time difference of', max_date - min_date, 'days, with the starting date of',
+      min_date); paste('and the last date recorded being', max_date)
+```
+
+```{r}
+# 2. completeness of each time series 
+
+# note that there are 9 total sites 
+sitenames <- unique(tick_data$site_id)
+# so we could do completeness for each site based on the whole maximum min/max across all sites:
+max_range <- length(seq(min_date, max_date, "week"))
+
+for (i in sitenames) {
+  SITE_DATA <- tick_data |> filter(site_id == i) |> select(c('datetime', 'observation'))
+  numrows <- dim(SITE_DATA)[1]
+  percent_missing <- round((1 - numrows/max_range)*100, digits = 2)
+  print(paste('Site', i, 'has', percent_missing, 'percent missing data'))
+}
+```
+
+```{r}
+# or we could split up each site into different datasets and do it that way 
+expand_data <- function(SITE_NAME) {
+  
+  SITE_DATA <- tick_data |> filter(site_id == SITE_NAME) |> select(c('datetime', 'observation'))
+  # getting date ranges of the specific site 
+  min_date <- min(SITE_DATA$datetime)
+  max_date <- max(SITE_DATA$datetime)
+  
+  # create a sequence of weeks
+  datetime <- seq(min_date, max_date, "week")
+  # create a df where this is a column 
+  EXPANDED_DATA <- data.frame(datetime)
+  # create a baseline NaN observation vals so we can fill them in if we have them 
+  EXPANDED_DATA['observation'] <- NaN
+  
+  for (i in 1:length(datetime)) {
+    # checking to see if the week has an observation in the site-specific dataset
+    if (EXPANDED_DATA[i,]$datetime %in% SITE_DATA$datetime) { 
+      # getting the week to check with the site-specific dataset 
+      present_week <- EXPANDED_DATA[i,]$datetime
+      # getting the specific row in the site-specific dataset 
+      count <- SITE_DATA |> filter(datetime == EXPANDED_DATA[i,]$datetime)
+      # getting the observation number 
+      count <- count$observation
+      # replacing the value in the larger dataset 
+      EXPANDED_DATA[i,]$observation <- count
+      }
+  }
+EXPANDED_DATA
+}
+
+# all the different sites 
+BLAN <- expand_data('BLAN')
+KONZ <- expand_data('KONZ')
+LENO <- expand_data('LENO')
+ORNL <- expand_data('ORNL')
+OSBS <- expand_data('OSBS')
+SCBI <- expand_data('SCBI')
+SERC <- expand_data('SERC')
+TALL <- expand_data('TALL')
+UKFS <- expand_data('UKFS')
+
+k <- 1
+for (i in list(BLAN, KONZ, LENO, ORNL, OSBS, SCBI, SERC, TALL, UKFS)){
+  site_names <- c("BLAN", "KONZ", "LENO", "ORNL", "OSBS", "SCBI", "SERC", "TALL", "UKFS")
+  percent_missing <- round((1 - sum(!is.na(i$observation))/dim(i)[1])*100, digits = 2)
+  print(paste('Site', site_names[k], 'has', percent_missing, 'percent missing data'))
+  k <- k + 1
+}
+```
+
+```{r, message=FALSE}
+# 3. basic descriptive statistics for each time series (at least mean, CV, ACF for each variable
+# plus anything else you would like to add)
+
+# checking if our data missing percentage goes down if we group by month
+# also calculating CV for each month 
+CV <- function(x, ...){(sd(x, ...)/mean(x, ...))*100} # specify a function for CV
+# recall that the coefficient of variation (CV) is the ratio of the standard deviation to the mean. 
+# The higher the coefficient of variation, the greater the level of dispersion around the mean. 
+# It is generally expressed as a percentage.
+get_month_mean_CV <- function(DATA){
+  FINAL_DF <- DATA %>% group_by(month = month(datetime), year = year(datetime)) %>% 
+  summarise(observation_monthly_mean = mean(observation, na.rm=TRUE), 
+            monthly_CV = CV(observation, na.rm = T))
+  FINAL_DF
+}
+
+BLAN_month <- get_month_mean_CV(BLAN)
+KONZ_month <- get_month_mean_CV(KONZ)
+LENO_month <- get_month_mean_CV(LENO)
+ORNL_month <- get_month_mean_CV(ORNL)
+OSBS_month <- get_month_mean_CV(OSBS)
+SCBI_month <- get_month_mean_CV(SCBI) 
+SERC_month <- get_month_mean_CV(SERC) 
+TALL_month <- get_month_mean_CV(TALL) 
+UKFS_month <- get_month_mean_CV(UKFS)
+```
+
+```{r}
+# we see that when grouping by month, the % missing data significantly decreases 
+# but also note that if you looked at CV, we get NaNs when there is only 
+# one data point, so CV coverage is still really sparse until you do by year
+k <- 1
+for (i in list(BLAN_month, KONZ_month, LENO_month, ORNL_month, OSBS_month, 
+               SCBI_month, SERC_month, TALL_month, UKFS_month)){
+  site_names <- c("BLAN", "KONZ", "LENO", "ORNL", "OSBS", "SCBI", "SERC", "TALL", "UKFS")
+  percent_missing <- round((1 - sum(!is.na(i$observation_monthly_mean))/dim(i)[1])*100, digits=2)
+  print(paste('When grouped by month, site', site_names[k], 'has', 
+              percent_missing, 'percent missing data'))
+  k <- k + 1
+}
+```
+
+```{r}
+# getting mean for each year  
+k <- 1
+for (i in list(BLAN_month, KONZ_month, LENO_month, ORNL_month, OSBS_month, 
+               SCBI_month, SERC_month, TALL_month, UKFS_month)){
+  site_names <- c("BLAN", "KONZ", "LENO", "ORNL", "OSBS", "SCBI", "SERC", "TALL", "UKFS")
+  DATA <- i %>% group_by(year = year) %>% 
+    summarise(year_mean = round(mean(observation_monthly_mean, na.rm=TRUE), digits=2)) %>% 
+    pivot_wider(names_from = year, values_from = year_mean) %>% as.matrix()
+  print(paste('Site', site_names[k], 'has yearly mean values of:'))
+  print(DATA)
+  cat(' ', sep="\n\n")
+  k <- k + 1
+}
+```
+
+```{r}
+# CV for each year  
+k <- 1
+for (i in list(BLAN_month, KONZ_month, LENO_month, ORNL_month, OSBS_month, 
+               SCBI_month, SERC_month, TALL_month, UKFS_month)){
+  site_names <- c("BLAN", "KONZ", "LENO", "ORNL", "OSBS", "SCBI", "SERC", "TALL", "UKFS")
+  DATA <- i %>% group_by(year = year) %>% 
+    summarise(year_CV = round(CV(monthly_CV, na.rm=TRUE), digits=2)) %>% 
+    pivot_wider(names_from = year, values_from = year_CV) %>% as.matrix()
+  print(paste('Site', site_names[k], 'has yearly CV values of:'))
+  print(DATA)
+  cat(' ', sep="\n\n")
+  k <- k + 1
+}
+```
+
+```{r}
+# getting ACF 
+for (i in list(BLAN, KONZ, LENO, ORNL, OSBS, SCBI, SERC, TALL, UKFS)){
+  ACF_DATA <- i %>% dplyr::select(observation) %>% drop_na() %>% as.matrix()
+  acf(ACF_DATA)
+}
+```
+
+The main takeaways are even though that the data are taken over nine years (not necessarily on a weekly basis but the data has been grouped by the weekly mean observations), it is not equally distributed between all the nine sites present. Additionally, the data are pretty sparse and it is not until grouped by month that missing data decreases significantly (this sparseness thus affects monthly CV). Finally, looking at the ACFs for each of the nine sites, we can see that periodicity is present in some of them and there is mild drift also present in some of the sites. 
+
+### 2) Plot the data [1 point].
+```{r}
+tick_data |> ggplot(aes(datetime, observation)) + geom_line() + facet_wrap(~site_id)
+```
+
+Above we have the data plotted for each of the nine sites. We can start to see a little bit of a seasonal pattern and we see that there are varying degrees of abundance across the different sites. It will be interesting to dive deeper into abundance prediction for each of the sites and how they differ in terms of strength of covariates. 
+
+### 3) What is your main research question? Do you have any working hypothesis? [1 point].
+My main research question is to look at how the tick population of Amblyomma americanum changes over time in different sites. How do different sites differ in their tick populations and how do weather covariates play different roles in different sites? My working hypothesis is that precipitation and temperature will have a strong influence on the abundance of ticks in following years.
+
+### Any notes (optional)
+The data was collected from the NEON Forecast Challenge: https://projects.ecoforecast.org/neon4cast-docs/Ticks.html. That website shows how the data was collected and then preprocessed. In additon, I did not add the weather covariates in the data, but I will be using the dataset also from the NEON Forecast Challenge: https://projects.ecoforecast.org/neon4cast-docs/Shared-Forecast-Drivers.html. They have the following weather covariates I could use in my analysis: air temperature, air pressure, wind speed, precipitation, downwelling longwave radiation, downwelling shortwave radiation, and relative humidity.
+
+

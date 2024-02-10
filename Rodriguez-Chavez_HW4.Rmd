@@ -1,0 +1,293 @@
+---
+title: "ESPM 174A - Lab 7 & Homework Assignment 4"
+author: "Daniela Rodriguez-Chavez"
+date: "October 27th, 2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+### Instructions
+In this lab and associated homework assignment, we will advance the final project. We will get the data ready, we will specify a model to fit your own data, we will fit the model, and we will interpret the results. This lab is meant to build on Homework Assignment 2 (HW2), and get you closer to the final model or set of models that you will be using for your project. 
+
+Most of you will be fitting MAR or MARSS models. If so, answer questions 1-5 below. Please submit the completed lab on bCourses as a knitted R Markdown (html or pdf) by Friday, Oct 20th before midnight. This submission will be the 4th and last Homework Assignment (HW4).
+
+### Questions
+**Question 1**
+
+In your individual project, what is (are) your variate(s), also known as response(s)? Create the object (or recover it from HW2), and name it 'dat'. If you have many variates, you do not need to analyze the whole dataset in this lab/HW4. However, the closer the resemblance of this data set to the one you will end up analyzing, the better. E.g., if your question is at the community level, then include several species; if you would like to compare a particular physical variable across different sites, then include several sites. If you have multivariate responses, name rows appropriately so that you can keep track of each state. Do you need to further clean and/or transform these data for analysis (e.g., log-transform, z-score)? If so, do it below (and name this new object 'transformed_dat'). Remember time needs to go over columns (use tidyr's 'pivot_wider' if necessary), and you need a 'matrix' object--you can check that using the function 'class()'  [1 point]
+
+```{r setup, message = FALSE}
+# packages
+library(tidyverse)
+library(neon4cast) # remotes::install_github("eco4cast/neon4cast")
+library(neonUtilities)
+library(BiocManager)
+library(lubridate)
+```
+
+```{r}
+tick_data_raw <- read_csv("https://data.ecoforecast.org/neon4cast-targets/ticks/ticks-targets.csv.gz")
+tick_data <- tick_data_raw # saving it
+# remind ourselves of what the data looks like  
+tick_data |> ggplot(aes(datetime, observation)) + geom_line() + facet_wrap(~site_id)
+```
+
+```{r}
+# we want to standardize the start and end date for each site
+# visually, we see that LENO might be cutting off too much data so we remove it
+tick_data  <- tick_data |> filter(site_id != "LENO")
+# now we check the min and max for each site 
+for (i in unique(tick_data$site_id)) {
+  SITE_DATA <- tick_data |> filter(site_id == i)
+  print(paste('For site', i, ', the starting date is', min(SITE_DATA$datetime), 
+              'and the last date recorded being', max(SITE_DATA$datetime)))
+}
+```
+
+```{r}
+# standardizing the timeframe among the relevant sites
+tick_data <- tick_data |> filter(datetime >= "2015-07-13" & datetime <= "2022-08-15") |>
+  select(-variable, -iso_week)
+tick_data |>  ggplot(aes(datetime, observation)) + geom_line() + facet_wrap(~site_id)
+```
+
+```{r}
+# create a sequence of weeks to have standardized weeks 
+datetime <- seq(min(tick_data$datetime), max(tick_data$datetime), "week")
+# create a df where this is a column 
+EXPANDED_DATA <- data.frame(datetime)
+  
+# creating a function that will create a df of each site for all the weeks
+# then also grouping by month
+fill_data <- function(SITE_NAME) {
+  # getting the general df
+  SITE_DATA <- left_join(EXPANDED_DATA, subset(tick_data, site_id == SITE_NAME))
+  # grouping by just month and year 
+  SITE_DATA['datetime'] <- format(SITE_DATA$datetime, format = "%Y-%m")
+  # getting the monthly average
+  SITE_DATA <-SITE_DATA %>% group_by(datetime) %>%
+    summarise(obs_month_avg = mean(observation, na.rm=TRUE)) %>% ungroup()
+  # recording the site name
+  SITE_DATA["site_id"] <- SITE_NAME
+  # returning the data
+  SITE_DATA
+}
+
+# all the different sites 
+BLAN <- fill_data('BLAN')
+KONZ <- fill_data('KONZ')
+ORNL <- fill_data('ORNL')
+OSBS <- fill_data('OSBS')
+SCBI <- fill_data('SCBI')
+SERC <- fill_data('SERC')
+TALL <- fill_data('TALL')
+UKFS <- fill_data('UKFS')
+
+# joining all the sites together into one big dataframe
+dat <- bind_rows(list(BLAN, KONZ, ORNL, OSBS, SCBI, SERC, TALL, UKFS))
+# reorder by time 
+dat$datetime <- parse_date_time(dat$datetime, "Ym")
+dat$datetime <- as.Date(dat$datetime, format = "%Y-%m")
+dat <- dat[order(dat$datetime), ]; dat
+```
+```{r}
+library(patchwork)
+p1 <- ggplot(data = dat, aes(x = datetime, y = obs_month_avg, group = site_id)) +
+  geom_point(aes(color = site_id)) + geom_line(aes(color=site_id))
+
+p2 <- dat |> ggplot(aes(datetime, obs_month_avg)) + geom_line() + facet_wrap(~site_id)
+
+p1 + p2
+```
+
+```{r}
+# time needs to go over columns (use tidyr's 'pivot_wider' if necessary)
+dat <- pivot_wider(dat, names_from = datetime, values_from = obs_month_avg)
+# turning it into a matrix 
+dat <- as.matrix(dat); dat
+```
+
+Answer: My variate is the average amount of ticks that were recorded in a month. 
+I have 8 sites in total, though due to the constraints on the covariates, 
+they will go down to three for this assignment.
+
+
+**Question 2**
+
+What is (are) your covariate(s), aka driver(s), if any? Z-score them and make sure they have no missing data (MARSS does not allow NA's in covariate data). You can name them 'trasnformed_covar'. Remember time needs to go over columns (use tidyr's 'pivot_wider' if necessary), and you need a 'matrix' object--you can check that using the function 'class()' [1 point]
+```{r code chunk 2}
+# getting my covars 
+# just looking at air temperature 
+neon <- arrow::s3_bucket("neon4cast-targets/neon",
+                  endpoint_override = "data.ecoforecast.org",
+                  anonymous = TRUE)
+temp <- arrow::open_dataset(neon$path("wss_daily_temp-basic-DP4.00001.001")) 
+temp <- temp |> dplyr::filter(siteID %in% dat[,1]) |>
+  dplyr::collect()
+# cleaning up the data
+temp <- temp |> select(date, wssTempTripleMean, siteID) |> 
+  rename(site_id = siteID) |>
+  rename(mean_temp = wssTempTripleMean)
+temp 
+```
+
+```{r}
+# getting the dates because of NaNs we have to shorten the dates
+temp <- temp |> filter(between(date, as.Date('2016-01-01'), as.Date('2016-12-31')))  |>
+  rename(datetime = date)
+# averaging it by month for each site 
+temp['datetime'] <- format(temp$datetime, format = "%Y-%m")
+# getting the monthly average
+temp <- temp %>% group_by(datetime, site_id) %>%
+  summarise(temp_month_avg = mean(mean_temp, na.rm=TRUE)) %>% ungroup()
+
+# getting rid of the sites that have NaNs
+temp |> filter(is.na(temp_month_avg))
+temp <- temp |> filter(site_id != "SCBI") |>
+  filter(site_id != 'KONZ') 
+temp
+```
+
+```{r}
+# z-scoring it 
+temp_ORNL <- temp |> filter(site_id == "ORNL")
+temp_OSBS <- temp |> filter(site_id == "OSBS")
+temp_TALL <- temp |> filter(site_id == "TALL")
+
+temp_ORNL$zscore_month_avg <- (temp_ORNL$temp_month_avg - 
+                                 mean(temp_ORNL$temp_month_avg))/sd(temp_ORNL$temp_month_avg)
+temp_OSBS$zscore_month_avg <- (temp_OSBS$temp_month_avg - 
+                                 mean(temp_OSBS$temp_month_avg))/sd(temp_OSBS$temp_month_avg)
+temp_TALL$zscore_month_avg <- (temp_TALL$temp_month_avg - 
+                                 mean(temp_TALL$temp_month_avg))/sd(temp_TALL$temp_month_avg)
+
+# joining all the sites together into one big dataframe
+covars <- bind_rows(list(temp_ORNL, temp_OSBS, temp_TALL))
+covars <- covars |> select(-temp_month_avg)
+covars
+```
+```{r}
+# time needs to go over columns (use tidyr's 'pivot_wider' if necessary)
+transformed_covar <- pivot_wider(covars, names_from = datetime, values_from = zscore_month_avg)
+# for the purposes of this homework, just seeing if I only have an average across all site temperatures
+transformed_covar <- transformed_covar |> select(-site_id) |> colMeans()
+transformed_covar <- as.data.frame(transformed_covar)
+# turning it into a matrix 
+vec <- transformed_covar$transformed_covar
+transformed_covar <- matrix(vec,1,12)
+transformed_covar
+```
+
+Answer: My covariates are just temperature. I need to figure out how to tie different
+temperature time series to different sites, but for right now I just averaged 
+across the three sites. I only have three sites and I significantly shortened 
+the time series due to NaNs in the temperature data. Looking for other weather data 
+will be important moving forward so I can have a longer time series. 
+
+
+**Question 3**
+
+Is each observation supposed to be modeled as a different state, or do you have 'replicate' observations, i.e. more than one observation being funneled into a state (via the Z matrix)? What are the dimensions of your Y's (observations x time steps) and X's (states x time steps)? Build the Z matrix you need, or specify it using a shortcut (e.g., Z = "identity"). [1 point]
+```{r code chunk 3}
+# your code here
+# because we only have three regions, we use a unique Z matrix
+Z = factor(c("site1", "site2", "site3"))
+```
+
+Answer: Because I only have three sites that I want to compare between, 
+with one observation per time step in each site, my Z matrix will consist 
+of each site being a separate state. 
+
+
+**Question 4**
+
+Specify the rest of your MAR/MARSS parameters using a model list, like we have been doing so far: R (based on the number of observations), and U, B, C, Q (based on the number of states). 
+If you would like to fit MAR instead of MARSS, then set R to "zero".
+Remember what we learned over the past few weeks, e.g. if you want to focus on the B matrix (e.g. species interactions) then it is best to fix U (long-term trend) to zero, which you can do after demeaning the variate data. 
+If you are building custom matrices, remember that R and Q need to be symmetrical, B does not need to be. Also, R, Q, and B need to be square; all other matrices may be rectangular. If you have covariate data, assign it here as well to the model list ("c").
+If you plan on comparing models, it is best practice to start with a simple model structure (e.g., Q = "diagonal and equal" instead of "unconstrained"), and make it progressively more complex. 
+ [1 point]
+```{r code chunk 4}
+# when I ran it with it being "equal", i got that Q went to 0,
+# so I am now making the model into a MAR model
+R = "zero"
+
+# because we are assuming that each site has its own independent processes, 
+# there is no covariance in the process error 
+Q = "diagonal and unequal" 
+
+# there is no density dependence in this situation 
+B = "identity"
+
+# because we did not transform our count data, 
+# we assume that there is a trend happening in U that 
+# we did not account for 
+U = "unequal" 
+
+# covariate data 
+# we set C to unequal because we want to see if it affects each site differently
+C = "unequal" 
+c = transformed_covar
+```
+
+
+**Question 5**
+
+Fit the model. If you get errors or warnings, first check that the model specification is right (e.g., number of dimensions of each matrix). If dimensions are right, but the model does not converge, increase number of iterations using the agument 'maxit'. If it still does not converge, check if the model you are fitting does not make sense given the data (e.g. perhaps you are fitting a stationary model to a non-stationary process), and re-specify the model accordingly, in step 5.
+If you are fitting MARSS and one of the variances goes to zero (Q or R), try fitting a MAR model instead.
+If errors persist, check the MARSS User Guide: https://cran.r-project.org/web/packages/MARSS/vignettes/UserGuide.pdf ("Appendix A - Warnings and errors", page 309). 
+Once it does work: bootstrap the model(s). What do you obtain? Is it what you expected?
+What are the next steps to complete analyses for your final project? [1 point]
+```{r code chunk 5}
+# getting from 2016-01 to 2017-06
+dat <- dat[,-(2:7)]
+dat <- dat[,1:13]
+# getting only the sites that match the transformed covars
+dat <- as.tibble(dat)
+dat <- dat |> filter(site_id %in% c("ORNL", "OSBS", "TALL")) |>
+  select(-site_id)
+# turning into numeric vals
+dat <- as.matrix(dat)
+dat <- apply(dat, 2, as.numeric)
+dat 
+```
+```{r}
+library(MARSS)
+mod0 = list() # This will be the list of parameters, each is a matrix
+
+# X equation (process model)
+mod0$B = B
+mod0$U = U
+mod0$Q = Q
+mod0$C = C
+mod0$c = c
+
+# Y equation (observation model)
+mod0$Z = Z
+mod0$R = R
+
+# Fit the MARSS model
+mod0.fit = MARSS(dat, model=mod0)
+```
+
+```{r}
+# Bootstrap best model
+myMARSSobject<-MARSSparamCIs(mod0.fit)
+myMARSSobject
+```
+
+Answer: After bootstrapping the model, we see that both the trend and the influence 
+of temperature on each of the sites is actually not that significant, since 
+0 is present within all of the confidence intervals. It is a little bit about what I expected
+because since I only have a year of data this time around, it doesn't make sense 
+that there would be enough time to form a trend. 
+
+I definitely have a lot to work on, since I want to have 7 sites and a much 
+longer time span. Things to focus on are figuring out how to tie specific 
+covariates to specific sites, as well as get weather data for each site that 
+is the length that I need it to be. I might also add humidity/precipitation as a 
+second covariate. 
+
+
+

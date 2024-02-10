@@ -1,0 +1,119 @@
+---
+title: "Exploring_NOAA_weather"
+output: pdf_document
+date: "2023-11-03"
+---
+
+```{r setup, include=FALSE}
+# packages
+library(tidyverse)
+library(neon4cast) # remotes::install_github("eco4cast/neon4cast")
+library(neonUtilities)
+library(BiocManager)
+library(lubridate)
+library(neonstore) # devtools::install_github("cboettig/neonstore")
+```
+
+#### Temperature
+```{r}
+# literally just downloading it 
+neon_download("DP1.00003.001")
+```
+
+```{r}
+neon_store(table = "TAAT_30min", product = "DP1.00003.001")
+
+# if we want to see list of table names 
+con = neon_db()
+DBI::dbListTables
+DBI::dbListTables(con)
+
+# collecting the sites we want and averaging by year 
+test_temp <- neon_table("TAAT_30min")
+temp_dat <- test_temp |> filter(siteID %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SCBI", "SERC", "TALL", "UKFS")) |>
+  mutate(month = month(startDateTime), year = year(startDateTime)) |>
+  group_by(year, month, siteID) |>
+  summarise(mean_temp = mean(tempTripleMean, na.rm = TRUE)) |>
+  ungroup() |>
+  # show_query() uses SQL 
+  collect() # this is to have it come into R, only use when you're pretty much done using dplyr
+temp_dat
+```
+```{r}
+# further cleaning 
+# creating a date object column
+temp_dat['datetime'] <- make_date(year = temp_dat$year, month = temp_dat$month, day = 1)
+# cleaning the data 
+temp_dat <- temp_dat |> filter(datetime >= "2014-08-01" & datetime <= "2022-07-01") |>
+  select(-year, -month)
+# plotting our temp data 
+temp_dat |> ggplot(aes(datetime, mean_temp)) + geom_line() + facet_wrap(~siteID)
+```
+```{r}
+# check if we have any NAs
+temp_dat |> filter(is.na(mean_temp))
+```
+
+```{r}
+# reducing the data set so there are no NA vals 
+```       
+
+#### Humidity
+```{r}     
+# getting humidity data 
+neon_download("DP1.00098.001")
+
+neon_store(table = "RH_30min", product = "DP1.00098.001")
+
+# if we want to see list of table names 
+con = neon_db()
+DBI::dbListTables
+DBI::dbListTables(con)
+             
+# collecting the sites we want and averaging by year 
+test_hum <- neon_table("RH_30min")
+hum_dat <- test_hum |> filter(siteID %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SERC", "TALL", "UKFS")) |>
+  mutate(month = month(startDateTime), year = year(startDateTime)) |>
+  group_by(year, month, siteID) |>
+  summarise(mean_hum = mean(RHMean, na.rm = TRUE)) |>
+  ungroup() |>
+  collect() # this is to have it come into R, only use when you're pretty much done using dplyr
+```
+
+```{r}
+# plotting our data
+hum_dat['datetime'] <- make_date(year = hum_dat$year, month = hum_dat$month, day = 1)
+hum_dat |> ggplot(aes(datetime, mean_hum)) + geom_line() + facet_wrap(~siteID) + ylim(c(0,100))
+```
+#### Precipitation
+```{r}
+neon_download("DP1.00006.001")
+neon_store(table = "PRIPRE_5min", product = "DP1.00006.001") 
+```
+
+```{r}
+test_precip <- neon_table("PRIPRE_5min")
+
+precip_dat <- test_precip |> filter(siteID %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SERC", "TALL", "UKFS")) |>
+  filter(priPrecipFinalQF == 0) |>
+  mutate(month = month(startDateTime), year = year(startDateTime)) |>
+  group_by(year, month, siteID) |>
+  summarise(total_precip = sum(priPrecipBulk, na.rm = TRUE)) |>
+  ungroup() |>
+  collect() # this is to have it come into R, only use when you're pretty much done using dplyr
+             
+```
+
+```{r}
+# plotting our data
+precip_dat['datetime'] <- make_date(year = precip_dat$year, month = precip_dat$month, day = 1)
+precip_dat |> ggplot(aes(datetime, total_precip)) + geom_line() + facet_wrap(~siteID)
+```
+
+##  Downloading the .csv files 
+```{r}
+write.csv(temp_dat, "/home/daniela/espm-174a/espm-174a/temp-data.csv")
+write.csv(hum_dat, "/home/daniela/espm-174a/espm-174a/humidity-data.csv")
+write.csv(precip_dat, "/home/daniela/espm-174a/espm-174a/precip-data.csv")
+
+```

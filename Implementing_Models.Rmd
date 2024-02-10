@@ -1,0 +1,139 @@
+---
+title: "Implementing_Models"
+output: pdf_document
+date: "2023-11-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) 
+library(tidyverse)
+library(dplyr)
+library(MARSS)
+```
+
+```{r}
+# let's just test out one site and see what happens 
+
+dat_UKFS <- dat |> filter(site_id == 'UKFS') |> 
+  filter(datetime >= "2016-01-01" & datetime <= "2022-07-01") |>
+  select(-site_id) |>
+  pivot_wider(names_from = datetime, values_from = obs_month_avg)
+dat_UKFS <- as.matrix(dat_UKFS)
+
+temp_UKFS <- temp_dat |> filter(siteID == 'UKFS') |> 
+  filter(datetime >= "2016-01-01" & datetime <= "2022-07-01") |> select(-siteID) |>
+  pivot_wider(names_from = datetime, values_from = mean_temp)
+temp_UKFS <- as.matrix(temp_UKFS)
+```
+
+
+### MARSS MODEL
+```{r}
+# MARSS model 
+R = "zero"
+
+# because we are assuming that each site has its own independent processes, 
+# there is no covariance in the process error 
+Q = "diagonal and unequal" 
+
+# there is no density dependence in this situation 
+B = "identity"
+
+# because we did not transform our count data, 
+# we assume that there is a trend happening in U that 
+# we did not account for 
+U = "unequal" 
+
+# covariate data 
+# we set C to unequal because we want to see if it affects each site differently
+C = "unequal" 
+c = temp_UKFS
+
+Z = factor(c("UKFS"))
+```
+
+```{r}
+mod0 = list() # This will be the list of parameters, each is a matrix
+
+# X equation (process model)
+mod0$B = B
+mod0$U = U
+mod0$Q = Q
+mod0$C = C
+mod0$c = c
+
+# Y equation (observation model)
+mod0$Z = Z
+mod0$R = R
+
+# Fit the MARSS model
+mod0.fit = MARSS(dat_UKFS, model=mod0)
+```
+
+### DLM Models
+```{r}
+# Setting the parameters
+timesteps <- dim(dat_UKFS)[2] 
+m = 2 # we will have 2 time-varying states (one for the intercept, one for the slope)
+B <- diag(m) # 2x2; Identity matrix
+# we dont expect tick abundance to change in a linear way 
+U <- matrix(0, nrow = m, ncol = 1) # 2x1; both elements = 0 (the states will be random walks without drift)
+Q = "diagonal and unequal" # Each state will have its own process error variance
+R = "diagonal and unequal"
+A = "zero" 
+inits.list <- list(x0 = matrix(c(0, 0), nrow = m)) # starting values for regression parameters
+
+# Important: we will need to build the complex Z, now an array instead of a matrix
+Z <- array(NA, c(1, m, timesteps)) # NxMxT; empty for now (N=1=number of covariates, m = states)
+Z[1, 1, ] <- rep(1, timesteps) # Nx1; 1's for intercept
+Z[1, 2, ] <- temp_UKFS # Nx1; regression variable (air temperature)
+dim(Z) # Dimensions are correct
+Z[,,1:5] # These are the first 5 "pages" of Z
+
+# list of model matrices & vectors
+mod.list <- list(B = B, U = U, Q = Q, Z = Z, A = A, R = R)
+
+#Run DLM
+DLM_Output <- MARSS(dat_UKFS, inits = inits.list, model = mod.list) # This may take a minute
+str(DLM_Output)
+
+# Examine output data (states)
+DLM_Output_Slope_Intercept<- t(as.data.frame(DLM_Output$states)) 
+head(DLM_Output_Slope_Intercept) #First value is intercept, second is slope
+colnames(DLM_Output_Slope_Intercept)<-c("Intercept", "Slope")
+head(DLM_Output_Slope_Intercept)
+# Examine output data (Standard Error for the states)
+DLM_Output_SE<- t(as.data.frame(DLM_Output$states.se))
+colnames(DLM_Output_SE)<-c("Intercept_SE", "Slope_SE") #First value is intercept SE, second is slope SE
+head(DLM_Output_SE)
+
+
+# Now append these outputs to the original data set
+og_dat_SITE <- dat |> filter(site_id == 'UKFS') |> 
+  filter(datetime >= "2016-01-01" & datetime <= "2022-07-01") |>
+  select(-site_id)
+
+og_dat_TEMP <- temp_dat |> filter(siteID == 'UKFS') |> 
+  filter(datetime >= "2016-01-01" & datetime <= "2022-07-01") |> 
+  select(-c(siteID, datetime))
+
+DLM_Join<- cbind(og_dat_SITE, og_dat_TEMP, DLM_Output_Slope_Intercept, DLM_Output_SE)
+head(DLM_Join)
+
+# Plot thermal sensitivity (time-varying slope)
+Plot_Sensitivity <- ggplot(data = DLM_Join, mapping = aes(x=datetime, y=Slope)) + 
+  geom_line()  + geom_line(DLM_Join, mapping = aes(x=datetime, y=Slope+ (2*Slope_SE)), linetype= 2, col="darkgray")+ geom_line(DLM_Join, mapping = aes(x=datetime, y=Slope- (2*Slope_SE)), linetype= 2, col="darkgray") +
+  geom_hline(yintercept = 0, col= "red") + theme_classic(base_size = 20)+ 
+  scale_y_continuous(breaks =c(0, .1, .2, .3, .4, .5, .6), limits =c(-.1,0.7))+ 
+  scale_x_date(date_breaks = "3 months" , date_labels = "%b")
+Plot_Sensitivity
+
+# If you are interested in the time-varying intercept instead:
+Plot_Intercept <- ggplot(data = DLM_Join, mapping = aes(x=Dates, y=Intercept)) + 
+  geom_line()  + geom_line(DLM_Join, mapping = aes(x=Dates, y=Intercept+(2*Intercept_SE)), linetype= 2, col="darkgray")+ geom_line(DLM_Join, mapping = aes(x=Dates, y=Intercept-(2*Intercept_SE)), linetype= 2, col="darkgray") +
+  geom_hline(yintercept = 0, col= "red") + theme_classic(base_size = 20)+ 
+  scale_y_continuous()+ 
+  scale_x_date(date_breaks = "3 months" , date_labels = "%b")
+Plot_Intercept
+
+```

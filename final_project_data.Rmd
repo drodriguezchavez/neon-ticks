@@ -1,0 +1,254 @@
+---
+title: "Final Project Data for Public Health"
+output: pdf_document
+date: "2023-11-03"
+---
+
+```{r setup, include=FALSE}
+# packages
+library(tidyverse)
+library(neon4cast) # remotes::install_github("eco4cast/neon4cast")
+library(neonUtilities)
+library(BiocManager)
+library(lubridate)
+library(dplyr)
+library(neonstore) # devtools::install_github("cboettig/neonstore")
+```
+
+## Tick Data
+```{r}
+# downloading the data 
+# neon_download("DP1.10093.001") 
+# neon_store(table = "tck_taxonomyProcessed", product = "DP1.10093.001")
+# con = neon_db() 
+# DBI::dbListTables 
+# DBI::dbListTables(con)
+test_tick <- neon_table("tck_taxonomyProcessed-basic-DP1.10093.001") 
+
+# getting a cleaner site and plot id column
+test_tick$site_id <- substr(test_tick$plotID, 1, 4)
+test_tick$plotID <- substr(test_tick$plotID, 6, 9)
+
+# subsetting only the tick, columns, and sites we need 
+tick_data <- test_tick |> 
+  filter(site_id %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SERC", "TALL", "UKFS")) |>
+  filter(scientificName == "Amblyomma americanum") |>
+  filter(sampleCondition == "OK") |>
+  select(-c(uid, namedLocation, identifiedDate, sampleID, subsampleID, acceptedTaxonID, 
+            taxonRank, family, subfamily, tribe, subtribe, genus, subgenus, specificEpithet, 
+            infraspecificEpithet, identificationQualifier, identificationReferences,
+            identificationProtocolVersion, identificationHistoryID, scientificNameAuthorship,
+            archiveMedium, archiveFacilityID, deprecatedVialID, identifiedBy, 
+            laboratoryName,  file, scientificName, remarks, sampleCondition))
+head(tick_data)
+```
+
+```{r}
+ggplot(tick_data, aes(collectDate, individualCount, color = sexOrAge)) + 
+  geom_line() + 
+  facet_wrap(~site_id)
+```
+
+## Tick Pathogen Status
+I don't think I will be using this because it is so new so there is very little data
+```{r}
+# downloading the data 
+# neon_download("DP1.10092.001")
+# neon_store(table = "tck_pathogen", product = "DP1.10092.001") 
+test_pathogen <- neon_table("tck_pathogen-basic-DP1.10092.001")  
+
+# getting a cleaner plot id
+test_pathogen$plotID <- substr(test_pathogen$plotID, 6, 9)
+
+# cleaning the data for right tick, sites, and relevant columns
+pathogen_data <- test_pathogen |>
+  filter(siteID %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SERC", "TALL", "UKFS")) |>
+  filter(testPathogenName == "Amblyomma americanum") |>
+  filter(sampleCondition == "OK") |>
+  select(-c(uid, namedLocation, plotType, decimalLatitude, decimalLongitude,
+            geodeticDatum, coordinateUncertainty, elevation, elevationUncertainty,
+            endDate, subsampleID, testedDate, testingID, batchID, testProtocolVersion,
+            testPathogenName, remarks, testedBy, laboratoryName, dnaSampleID,
+            dnaSampleCode, file, sampleCondition))
+# replacing the positive and negative values with 1 and 0
+pathogen_data$testResult <- recode(pathogen_data$testResult, Positive = 1, Negative = 0)
+head(pathogen_data)
+```
+```{r}
+# NEED TO FIGURE OUT HOW TO PLOT THIS
+ggplot(pathogen_data, aes(collectDate, testResult)) + 
+  geom_line() + 
+  facet_wrap(~siteID)
+```
+
+## Temperature 
+```{r}
+# literally just downloading it 
+# neon_download("DP1.00003.001")
+# neon_store(table = "TAAT_30min", product = "DP1.00003.001")
+test_temp <- neon_table("TAAT_30min")
+
+# getting daily values of min, max, and average, note that we do have the uncertainty 
+temp_data <- test_temp |> filter(siteID %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SERC", "TALL", "UKFS")) |>
+  mutate(datetime = make_date(year = year(startDateTime), month = month(startDateTime), day = day(startDateTime))) |>
+  group_by(datetime, siteID) |>
+  summarise(mean_temp = mean(tempTripleMean, na.rm = TRUE), min_temp = min(tempTripleMinimum), max_temp = max(tempTripleMaximum)) |>
+  ungroup() 
+  # show_query() uses SQL 
+  # collect() # this is to have it come into R, only use when you're pretty much done using dplyr
+head(temp_data)
+```
+```{r}
+ggplot(temp_data, aes(x = datetime)) + 
+  geom_line(aes(y = mean_temp)) + 
+  geom_line(aes(y = min_temp), color = "lightblue") + 
+  geom_line(aes(y = max_temp), color = "red") + 
+  ylim(c(-25, 50)) + 
+  facet_wrap(~siteID)
+```
+
+
+
+## Precipitation 
+```{r}
+# neon_download("DP1.00006.001")
+# neon_store(table = "PRIPRE_5min", product = "DP1.00006.001") 
+test_precip <- neon_table("PRIPRE_5min")
+
+precip_dat <- test_precip |> filter(siteID %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SERC", "TALL", "UKFS")) |>
+  filter(priPrecipFinalQF == 0) |>
+  mutate(datetime = make_date(year = year(startDateTime), month = month(startDateTime), day = day(startDateTime))) |>
+  group_by(datetime, siteID) |>
+  summarise(total_precip = sum(priPrecipBulk, na.rm = TRUE)) |>
+  ungroup() # |>
+  # collect() # this is to have it come into R, only use when you're pretty much done using dplyr
+```
+```{r}
+# plotting
+ggplot(precip_dat, aes(x = datetime)) + 
+  geom_line(aes(y = total_precip)) + 
+  facet_wrap(~siteID)
+```
+
+
+
+## Humidity 
+```{r}
+# getting humidity data 
+# neon_download("DP1.00098.001")
+# neon_store(table = "RH_30min", product = "DP1.00098.001")
+test_hum <- neon_table("RH_30min")
+
+hum_dat <- test_hum |> filter(siteID %in% c("BLAN", "KONZ", "ORNL", "OSBS", "SERC", "TALL", "UKFS")) |>
+  mutate(datetime = make_date(year = year(startDateTime), month = month(startDateTime), day = day(startDateTime))) |>
+  group_by(datetime, siteID) |>
+  summarise(mean_hum = mean(RHMean, na.rm = TRUE), min_hum = min(RHMinimum), max_hum = max(RHMaximum))
+  ungroup() # |>
+  # collect() # this is to have it come into R, only use when you're pretty much done using dplyr
+hum_dat
+```
+```{r}
+ggplot(hum_dat, aes(x = datetime)) + 
+  geom_line(aes(y = mean_hum)) + 
+  geom_line(aes(y = min_hum), color = "lightblue") + 
+  geom_line(aes(y = max_hum), color = "red") + 
+  ylim(c(0, 110)) + 
+  facet_wrap(~siteID)
+```
+## Joining The Data Together 
+```{r}
+subset_sites <- c("OSBS", "KONZ", "ORNL")
+tick_data_subset <- tick_data |> filter(site_id %in% subset_sites)
+
+# climate data 
+temp_data_subset <- temp_data |> filter(siteID %in% subset_sites)
+temp_data_subset$mean_temp[is.nan(temp_data_subset$mean_temp)] <- NA
+
+hum_data_subset <- hum_dat |> filter(siteID %in% subset_sites)
+
+precip_data_subset <- precip_dat |> filter(siteID %in% subset_sites)
+```
+
+
+
+```{r}
+clima_data <- left_join(temp_data_subset, hum_data_subset, by = c("datetime", "siteID"))
+clima_data <- left_join(clima_data, precip_data_subset, by = c("datetime", "siteID"))
+clima_data
+```
+```{r}
+# making sure we have the same date as the climate data
+tick_data_subset$collectDate <- as.Date(format(as.POSIXct(tick_data_subset$collectDate,
+                  format = '%Y/%m/%d %H:%M:%S'), format = '%Y-%m-%d'))
+tick_data_subset
+```
+
+```{r}
+tick_plots <- unique(select(tick_data_subset, c(plotID, site_id)))
+
+# https://www.neonscience.org/field-sites/explore-field-sites 
+ORNL_plots <- filter(tick_data_subset, site_id == "ORNL")
+ORNL_plots$veg_type <- recode(ORNL_plots$plotID, 
+                              `002`	= "Deciduous Forest",
+                              `007`	= "Deciduous Forest",
+                              `008`	= "Deciduous Forest",
+                              `009`	= "Deciduous Forest",
+                              `040`	= "Evergreen Forest",
+                              `003`	= "Deciduous Forest",
+                              `006`	= "Deciduous Forest")
+
+KONZ_plots <- filter(tick_data_subset, site_id == "KONZ")
+KONZ_plots$veg_type <- recode(KONZ_plots$plotID,
+                              `025` = "Deciduous Forest",
+                              `009` = "Grassland/Herbaceous",
+                              `002` = "Grassland/Herbaceous",
+                              `004` = "Grassland/Herbaceous",
+                              `007` = "Grassland/Herbaceous",
+                              `001` = "Grassland/Herbaceous"
+                              )
+
+OSBS_plots <- filter(tick_data_subset, site_id == "OSBS")
+OSBS_plots$veg_type <- recode(OSBS_plots$plotID,
+                              `048`	= "Deciduous Forest",
+                              `077`	= "Woody Wetlands",
+                              `001`	= "Woody Wetlands",
+                              `004`	= "Evergreen Forest",
+                              `002`	= "Evergreen Forest",
+                              `003`	= "Evergreen Forest",
+                              `005` = "Woody Wetlands",
+                              `063`	= "Mixed Forest",
+                              `022` = "Emergent Herbaceous Wetlands")
+```
+```{r}
+# combining! 
+final_tick_data <- rbind(KONZ_plots, ORNL_plots, OSBS_plots)
+final_tick_data <- rename(final_tick_data, c(siteID = site_id, datetime = collectDate))
+final_tick_data <- left_join(final_tick_data, clima_data, by = c("datetime", "siteID"))
+
+# add season (W, SU, SP, F), month, year
+final_tick_data$month <- month(final_tick_data$datetime)
+final_tick_data$year <- year(final_tick_data$datetime)
+final_tick_data$season <- recode(final_tick_data$month,
+                                 '3' = "Spring",
+                                 '4' = "Spring",
+                                 '5' = "Spring",
+                                 '6' = "Summer",
+                                 '7' = "Summer",
+                                 '8' = "Summer",
+                                 '9' = "Fall",
+                                 '10' = "Fall",
+                                 '11' = "Fall")
+
+# adding time steps 
+timesteps <- tibble(datetime = unique(final_tick_data$datetime))
+timesteps <- arrange(timesteps, timesteps$datetime)
+timesteps$t <- 1:dim(timesteps)[1]
+final_tick_data <- arrange(left_join(final_tick_data, timesteps, (by = "datetime")), t)
+
+final_tick_data
+```
+```{r}
+# exporting the data
+final_tick_data
+write.csv(final_tick_data, "/home/daniela/fall-2023/pbhlth-c242c/tick_data.csv", row.names=FALSE)
+```
